@@ -6,7 +6,7 @@ setup(
     description="JSVisor -- Advanced JavaScript Security Scanner",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    author="JSVisor Contributors",
+    author="BHARATH J",
     license="MIT",
     packages=find_packages(),
     py_modules=["js_analyzer"],

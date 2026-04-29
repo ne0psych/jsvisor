@@ -7,6 +7,10 @@ Static analysis tool for JavaScript source files. Extracts **endpoints, secrets,
 
 Generates **JSON / HTML / SARIF / Postman / Markdown** reports. Supports **AST parsing**, **entropy-based secret detection**, **framework-aware analysis**, **multi-threaded scanning**, and a **Textual TUI**.
 
+<p align="center">
+  <img src="report.png" alt="JSVisor HTML Report" width="900">
+</p>
+
 ---
 
 ## Features
@@ -116,6 +120,24 @@ jsvisor -d ./project \
 | `--serve` | Serve HTML report in browser after export |
 | `--port PORT` | Port for `--serve` (default: 7777) |
 | `--install-hook` | Install pre-commit git hook |
+
+---
+
+## Screenshots
+
+### HTML Report
+Self-contained single-file report with dark theme, severity-sorted categories, search/filter, collapsible file groups, and copy-to-clipboard.
+
+<p align="center">
+  <img src="report.png" alt="JSVisor HTML Report" width="900">
+</p>
+
+### Interactive TUI
+Terminal-based interface with category sidebar, findings table, log panel, and keyboard shortcuts.
+
+<p align="center">
+  <img src="TUI.png" alt="JSVisor TUI" width="900">
+</p>
 
 ---
 
