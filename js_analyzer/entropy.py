@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #2 — Better Credential & Secret Detection
+Better Credential & Secret Detection
 
 - Shannon entropy scoring for strings > 16 chars (flag if > 4.5)
 - Context-aware filtering: lower confidence for comments, test/example/dummy

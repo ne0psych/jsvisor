@@ -1,45 +1,44 @@
-# JS Analyzer — Advanced JavaScript Security Scanner
+# JSVisor -- Advanced JavaScript Security Scanner
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A powerful, extensible JavaScript static analysis tool that extracts **endpoints, secrets, URLs, emails, files, source maps, cloud resources, debug artifacts, GraphQL operations, and internal network indicators** from JavaScript source code.
+Static analysis tool for JavaScript source files. Extracts **endpoints, secrets, URLs, emails, files, source maps, cloud resources, debug artifacts, GraphQL operations, and internal network indicators** from JavaScript source code.
 
-Features a beautiful **Textual TUI**, generates **JSON / HTML / SARIF / Postman / Markdown** reports, supports **AST-based parsing**, **entropy-based secret detection**, **framework-aware analysis**, and much more.
+Generates **JSON / HTML / SARIF / Postman / Markdown** reports. Supports **AST parsing**, **entropy-based secret detection**, **framework-aware analysis**, **multi-threaded scanning**, and a **Textual TUI**.
 
 ---
 
 ## Features
 
-| # | Feature | Description |
-|---|---------|-------------|
-| 1 | **Advanced Dynamic Analysis** | AST parsing via `esprima`, string deobfuscation (`\xHH`, `\uXXXX`, `atob`/`btoa`), trivial expression evaluation |
-| 2 | **Better Secret Detection** | Shannon entropy scoring, context-aware confidence, JWT/admin credential detection, AWS key validation |
-| 3 | **Framework Detection** | React/Vue/Angular/Next.js/Nuxt/jQuery/Axios pattern recognition |
-| 4 | **Network Discovery** | Relative→absolute URL resolution, API version bruteforce lists, GraphQL introspection, Swagger/OpenAPI detection |
-| 5 | **Repo & Dependency Analysis** | `package.json` parsing, `process.env` risk detection, `.git` metadata extraction |
-| 6 | **Rich Reporting** | HTML (with search/filter/copy), SARIF, Postman collection, Markdown summary, enhanced deduplication |
-| 7 | **Performance** | Multi-threaded scanning, incremental cache (SHA-256), `.gitignore` support, streaming for large files |
-| 8 | **Integration** | Daemon mode (HTTP API), GitHub Action template, pre-commit hook, Slack/Teams notifications |
-| 9 | **TUI Enhancements** | Real-time search bar, collapsible file tree, multi-format export dialog, progress bar |
-| 10 | **Security Hardening** | Secret auto-redaction, password-protected ZIP export, `--no-network`, `--redact` flag |
-| 11 | **Additional Artifacts** | WebAssembly detection, browser storage keys, CORS misconfiguration, CDN/cloud provider summary |
+| Category | Description |
+|----------|-------------|
+| **AST Analysis** | JavaScript parsing via `esprima`, string deobfuscation (`\xHH`, `\uXXXX`, `atob`/`btoa`) |
+| **Secret Detection** | Shannon entropy scoring, context-aware confidence, JWT/admin/default credential detection |
+| **Framework Detection** | React, Vue, Angular, Next.js, Nuxt, jQuery, Axios pattern recognition |
+| **Network Discovery** | URL resolution, API version detection, GraphQL introspection, Swagger/OpenAPI |
+| **Repository Analysis** | `package.json` parsing, dependency vulnerability check, `.git` metadata, env injection risks |
+| **Reporting** | HTML (search, filter, copy), SARIF (CI/CD), Postman collection, Markdown summary |
+| **Performance** | Multi-threaded scanning, incremental cache (SHA-256), `.gitignore` support, streaming |
+| **Integration** | HTTP daemon, GitHub Action template, pre-commit hook, Slack/Teams notifications |
+| **Security** | Input validation, secret auto-redaction, encrypted ZIP, `--no-network` safe mode |
+| **Artifact Detection** | WebAssembly, browser storage keys, CORS misconfiguration, CDN provider summary |
 
 ---
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/js-analyzer.git
-cd js-analyzer
+# Clone
+git clone https://github.com/user/jsvisor.git
+cd jsvisor
 
-# Create virtual environment
+# Virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: .\venv\Scripts\activate  # Windows
+source venv/bin/activate    # Linux/Mac
+# .\venv\Scripts\activate   # Windows
 
-# Install dependencies
+# Dependencies
 pip install -r requirements.txt
 ```
 
@@ -48,10 +47,11 @@ pip install -r requirements.txt
 | Package | Purpose |
 |---------|---------|
 | `textual` | Terminal UI framework |
-| `esprima` | JavaScript AST parsing |
-| `pathspec` | `.gitignore` pattern matching |
-| `pycryptodome` | Password-protected ZIP export |
-| `rich` | Rich text rendering (installed with textual) |
+| `esprima` | JavaScript AST parsing (optional) |
+| `pathspec` | `.gitignore` pattern matching (optional) |
+| `pycryptodome` | Password-protected ZIP export (optional) |
+
+Core scanning works without optional dependencies. Enable them for extended features.
 
 ---
 
@@ -61,124 +61,157 @@ pip install -r requirements.txt
 
 ```bash
 python js_analyzer.py
+# or, if installed via pip:
+jsvisor
 ```
 
-### CLI Mode
+### CLI
 
 ```bash
 # Single file
-python js_analyzer.py -f app.bundle.js -o report
+jsvisor -f app.bundle.js -o report
 
 # Remote URL
-python js_analyzer.py -u https://example.com/main.js -o report
+jsvisor -u https://example.com/main.js -o report
 
 # Directory scan (multi-threaded)
-python js_analyzer.py -d ./src --threads 8 -o report
+jsvisor -d ./src --threads 8 -o report
 
-# With all enhancements enabled
-python js_analyzer.py -d ./project \
-  --ast \
-  --entropy \
-  --frameworks \
+# Full analysis
+jsvisor -d ./project \
+  --ast --entropy --frameworks \
   --base-url https://api.example.com \
   --threads 8 \
   --format json html sarif postman markdown \
+  --redact \
   -o analysis_report
 ```
 
-### New CLI Flags
+### CLI Flags
 
 | Flag | Description |
 |------|-------------|
-| `--ast` | Enable AST-based analysis (requires `esprima`) |
-| `--entropy` | Enable Shannon entropy scoring for secret detection |
-| `--frameworks` | Enable framework-specific pattern detection |
+| `-f, --file FILE` | Single local JS file |
+| `-u, --url URL` | Remote JS URL |
+| `-d, --directory DIR` | Scan directory recursively |
+| `-o, --output NAME` | Output base name |
+| `-v, --verbose` | Show file:line per finding |
+| `--ast` | Enable AST-based analysis |
+| `--entropy` | Enable Shannon entropy scoring |
+| `--frameworks` | Enable framework detection |
 | `--base-url URL` | Base URL for resolving relative endpoints |
-| `--graphql-introspect` | Perform GraphQL introspection if endpoint found |
+| `--graphql-introspect` | Run GraphQL introspection on discovered endpoints |
 | `--threads N` | Thread count for directory scanning (default: 4) |
-| `--incremental` | Skip unchanged files (uses `.js_analyzer_cache.json`) |
-| `--respect-gitignore` | Respect `.gitignore` patterns |
-| `--format FMT [FMT ...]` | Output formats: `json`, `html`, `sarif`, `postman`, `markdown` |
+| `--incremental` | Skip unchanged files via SHA-256 cache |
+| `--respect-gitignore` | Exclude files matching `.gitignore` patterns |
+| `--format FMT [...]` | Output formats: `json`, `html`, `sarif`, `postman`, `markdown` |
 | `--daemon` | Start HTTP daemon mode |
 | `--daemon-port PORT` | Daemon port (default: 8080) |
-| `--redact` | Redact secrets in reports |
-| `--no-network` | Disable all remote fetches |
+| `--redact` | Redact secrets in output and reports |
+| `--no-network` | Disable all outbound network requests |
 | `--encrypt` | Create password-protected ZIP of reports |
 | `--password PWD` | Password for encrypted ZIP |
-| `--notify-webhook URL` | Slack/Teams webhook URL for notifications |
+| `--notify-webhook URL` | Slack/Teams webhook for notifications |
+| `--debug` | Enable debug-level logging |
+| `--serve` | Serve HTML report in browser after export |
+| `--port PORT` | Port for `--serve` (default: 7777) |
+| `--install-hook` | Install pre-commit git hook |
 
 ---
 
 ## Output Formats
 
 ### HTML Report
-Beautiful, interactive single-file report with search/filter, copy-to-clipboard, and dark theme.
+Self-contained single-file report with dark theme, severity-sorted categories, search/filter, collapsible file groups, and copy-to-clipboard.
 
 ### SARIF
-GitHub Code Scanning compatible format for CI/CD integration.
+GitHub Code Scanning compatible format for CI/CD pipelines.
 
 ### Postman Collection
-Import directly into Postman — all discovered endpoints as a ready-to-use collection.
+All discovered endpoints as a ready-to-use Postman collection.
 
 ### Markdown Summary
-Risk-prioritized summary: Critical → High → Medium → Low.
+Risk-prioritized summary organized as Critical, High, Medium, Low.
 
 ---
 
 ## Integration
 
-### GitHub Action
+### HTTP Daemon
 
-Copy `.github/workflows/js-analyzer.yml` to your repository:
+```bash
+jsvisor --daemon --daemon-port 8080
 
-```yaml
-# See templates/github-action.yml for full template
+# Analyze a target
+curl -X POST http://127.0.0.1:8080/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"target": "./src/app.js"}'
+
+# Health check
+curl http://127.0.0.1:8080/health
+```
+
+### Slack / Teams Notifications
+
+Set the appropriate environment variable to receive scan results:
+
+```bash
+export JSVISOR_SLACK_WEBHOOK="https://hooks.slack.com/services/..."
+export JSVISOR_TEAMS_WEBHOOK="https://outlook.office.com/webhook/..."
+
+jsvisor -d ./src -o report
+```
+
+Or pass inline:
+```bash
+jsvisor -d ./src --notify-webhook "https://hooks.slack.com/services/..."
 ```
 
 ### Pre-commit Hook
 
 ```bash
-python js_analyzer.py --install-hook
-# or manually copy templates/pre-commit to .git/hooks/pre-commit
+jsvisor --install-hook
 ```
 
-### Daemon Mode
+### GitHub Action
 
-```bash
-python js_analyzer.py --daemon --daemon-port 8080
+Copy `templates/github-action.yml` to `.github/workflows/` in your repository.
 
-# Send analysis requests
-curl -X POST http://localhost:8080/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"target": "./src/app.js"}'
-```
+---
+
+## Security
+
+- **Input validation**: URL scheme checks, path traversal guards, file size limits (50 MB), symlink detection
+- **Secret redaction**: `--redact` flag masks secrets in all output (first 4 + last 4 characters)
+- **Safe mode**: `--no-network` prevents all outbound HTTP requests
+- **Encrypted export**: `--encrypt --password <PWD>` creates AES-encrypted ZIP
+- **XSS prevention**: All HTML report content is escaped via `html.escape`
+- **Daemon security**: Binds to localhost by default, validates request paths, limits body size
 
 ---
 
 ## Architecture
 
 ```
-js_analyzer.py          ← Main entry point (backward compatible)
+js_analyzer.py              Main entry point
 js_analyzer/
-├── __init__.py
-├── core.py             ← JSAnalyzer engine + patterns
-├── ast_analyzer.py     ← AST-based analysis (esprima)
-├── entropy.py          ← Shannon entropy + secret validation
-├── frameworks.py       ← Framework-specific detection
-├── network.py          ← Network discovery + GraphQL introspection
-├── repo_analysis.py    ← Package.json, .git, dependency analysis
-├── exporters.py        ← SARIF, Postman, Markdown exporters
-├── performance.py      ← Threading, caching, gitignore
-├── daemon.py           ← HTTP daemon mode
-├── notifications.py    ← Slack/Teams webhook notifications
-├── security.py         ← Redaction, encryption
-├── artifacts.py        ← WASM, storage, CORS, CDN detection
-├── tui.py              ← Enhanced Textual TUI
-└── html_report.py      ← Enhanced HTML report generator
+  __init__.py
+  ast_analyzer.py           AST parsing (esprima)
+  entropy.py                Shannon entropy + secret validation
+  frameworks.py             Framework detection
+  network.py                Network discovery + GraphQL
+  repo_analysis.py          Package.json, .git, dependencies
+  exporters.py              SARIF, Postman, Markdown
+  performance.py            Threading, caching, gitignore
+  daemon.py                 HTTP daemon mode
+  notifications.py          Slack/Teams webhooks
+  security.py               Redaction, encryption
+  artifacts.py              WASM, storage, CORS, CDN
+  html_report.py            HTML report generator
 ```
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License -- see [LICENSE](LICENSE) for details.

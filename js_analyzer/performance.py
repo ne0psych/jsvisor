@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #7 — Performance & Scalability
-
-- Multi-threaded scanning with ThreadPoolExecutor
-- Incremental scanning with SHA-256 cache
-- .gitignore pattern support via pathspec
-- Large file streaming
+Performance: threaded scanning, incremental cache, .gitignore support.
 """
 
 import hashlib
@@ -25,7 +20,7 @@ except ImportError:
 
 # ── Incremental Scanning Cache ───────────────────────────────────────
 
-CACHE_FILE = '.js_analyzer_cache.json'
+CACHE_FILE = '.jsvisor_cache.json'
 
 
 def load_cache(root_dir: str) -> dict:

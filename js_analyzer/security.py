@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #10 — Security Hardening
-
-- Auto-redact secrets in logs/output (show first 4 + last 4 chars)
-- Password-protected ZIP export
-- --no-network flag support
-- --redact flag for reports
+Security utilities: secret redaction and encrypted ZIP export.
 """
 
 import os

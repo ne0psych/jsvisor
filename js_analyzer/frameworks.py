@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #3 — Framework-Specific Knowledge
+Framework-Specific Knowledge
 
 Detect React/Vue/Angular, Next.js/Nuxt patterns, Webpack DefinePlugin,
 jQuery $.ajax(), and Axios calls.

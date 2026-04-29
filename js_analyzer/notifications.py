@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #8 — Integration: Notifications
-
-Send findings to Slack/Teams webhooks when secrets are detected.
-Configured via environment variables or CLI flags.
+Notifications: Slack and Microsoft Teams webhook integration.
 """
 
 import json
@@ -30,7 +27,7 @@ def send_slack_notification(
 
     # Build message
     color = '#ff0000' if secret_count else '#36a64f'
-    text = f"*JS Analyzer Scan Complete*\n"
+    text = f"*JSVisor Scan Complete*\n"
     text += f"Target: `{target}`\n"
     text += f"Total findings: {total}\n"
     if secret_count:
@@ -44,7 +41,7 @@ def send_slack_notification(
         "attachments": [{
             "color": color,
             "text": text,
-            "footer": "JS Analyzer v4.0",
+            "footer": "JSVisor v4.0",
         }]
     }
 
@@ -83,9 +80,9 @@ def send_teams_notification(
     payload = {
         "@type": "MessageCard",
         "themeColor": color,
-        "summary": f"JS Analyzer: {total} findings",
+        "summary": f"JSVisor: {total} findings",
         "sections": [{
-            "activityTitle": "JS Analyzer Scan Complete",
+            "activityTitle": "JSVisor Scan Complete",
             "facts": facts,
             "markdown": True,
         }],
@@ -106,10 +103,10 @@ def send_teams_notification(
 def notify(findings: dict, target: str, no_network: bool = False):
     """
     Auto-detect webhook type from environment variables and send notification.
-    Env vars: JS_ANALYZER_SLACK_WEBHOOK, JS_ANALYZER_TEAMS_WEBHOOK
+    Env vars: JSVISOR_SLACK_WEBHOOK, JSVISOR_TEAMS_WEBHOOK
     """
-    slack_url = os.environ.get('JS_ANALYZER_SLACK_WEBHOOK', '')
-    teams_url = os.environ.get('JS_ANALYZER_TEAMS_WEBHOOK', '')
+    slack_url = os.environ.get('JSVISOR_SLACK_WEBHOOK', '')
+    teams_url = os.environ.get('JSVISOR_TEAMS_WEBHOOK', '')
 
     if slack_url:
         send_slack_notification(slack_url, findings, target, no_network)

@@ -1,30 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-JS Analyzer v4.0 — Advanced JavaScript Security Scanner
+JSVisor v4.0 -- Advanced JavaScript Security Scanner
 
-Extracts endpoints, URLs, secrets, emails, files, source maps,
-cloud identifiers, debug artifacts, GraphQL operations, and
-internal network indicators from JavaScript source.
-
-Features (v4.0)
----------------
-* All original regex-based detection (preserved)
-* AST-based analysis via esprima (--ast)
-* Shannon entropy secret scoring (--entropy)
-* Framework detection: React/Vue/Angular/Next.js/Nuxt (--frameworks)
-* Network discovery: URL resolution, API versioning, GraphQL introspection
-* Repository analysis: package.json, .git metadata, env injection risks
-* Multi-format export: JSON, HTML, SARIF, Postman, Markdown
-* Multi-threaded scanning (--threads N)
-* Incremental scanning with SHA-256 cache (--incremental)
-* .gitignore support (--respect-gitignore)
-* Daemon HTTP mode (--daemon)
-* Slack/Teams notifications (--notify-webhook)
-* Security: --redact, --no-network, --encrypt
-* Additional: WASM, browser storage, CORS, CDN detection
-* Enhanced TUI with search, file tree, progress bar
+Static analysis tool for JavaScript source files. Extracts endpoints,
+URLs, secrets, emails, files, source maps, cloud identifiers, debug
+artifacts, GraphQL operations, and internal network indicators.
 """
+
 
 from __future__ import annotations
 
@@ -32,6 +15,7 @@ import re
 import sys
 import os
 import json
+import logging
 import http.server
 import threading
 import webbrowser
@@ -39,14 +23,23 @@ import datetime
 import argparse
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 from collections import defaultdict
 from typing import Optional
 
-# ═══════════════════════════════════════════════════════════════════
-#  ENHANCEMENT MODULE IMPORTS (graceful degradation)
-# ═══════════════════════════════════════════════════════════════════
+log = logging.getLogger("js_analyzer")
+
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB hard limit
+ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+
+
+# =================================================================
+#  Module imports
+# =================================================================
 
 try:
     from js_analyzer.ast_analyzer import (
@@ -156,16 +149,11 @@ try:
 except ImportError:
     def start_daemon(p=8080, a=None): print('Daemon module not found.')
 
-try:
-    from js_analyzer.html_report import generate_html_report as generate_html_report_v2
-    from js_analyzer.html_report import CAT_META as CAT_META_V2
-except ImportError:
-    generate_html_report_v2 = None
-    CAT_META_V2 = None
+from js_analyzer.html_report import generate_html_report as _html_report_impl
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  PATTERNS
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 ENDPOINT_PATTERNS = [
     re.compile(r'["\']((?:https?:)?//[^"\']+/api/[a-zA-Z0-9/_-]+)["\']', re.I),
@@ -314,7 +302,7 @@ SECRET_PATTERNS = [
     (re.compile(r'(?i)algolia.{0,16}([A-Z0-9]{10})\b'),                                         "Algolia App ID"),
     (re.compile(r'(mysql://[a-z0-9._%+\-]+:[^\s:@]+@[a-z0-9.-]+(?::\d{2,5})?(?:/[^\s"\'?]*)?)'), "MySQL URI"),
     (re.compile(r'(?i)(?:facebook|fb).{0,8}(?:app|application).{0,16}(\d{15})\b'),              "Facebook App ID"),
-    (re.compile(r'(EAACEdEose0cBA[A-Z0-9]{20,})\b'),                                            "Facebook Access Token"),
+    (re.compile(r'(E--CEdEose0cBA[A-Z0-9]{20,})\b'),                                            "Facebook Access Token"),
     (re.compile(r'\b(ya29\.[a-z0-9_-]{30,})\b'),                                                "Google OAuth2 Token"),
     (re.compile(r'(\d{9}:[a-zA-Z0-9_-]{35})'),                                                  "Telegram Bot Token"),
     (re.compile(r'(lin_api_[a-zA-Z0-9]{40})'),                                                  "Linear API Key"),
@@ -345,7 +333,7 @@ SECRET_PATTERNS = [
     (re.compile(r'(google_application_credentials["\s:=]+["\']?([^"\']+\.json)["\']?)', re.I), "GCP Credentials File"),
     (re.compile(r'(?:PRIVATE KEY-----.*?END (?:RSA|EC|OPENSSH|DSA) PRIVATE KEY-----)', re.DOTALL), "Private Key (Multi-line)"),
 
-    # Database connection strings – more formats
+    # Database connection strings -- more formats
     (re.compile(r'(postgresql://[^\s"\'<>]+:[^\s"\'<>]+@[^\s"\'<>]+/\w+)'),      "PostgreSQL URI with password"),
     (re.compile(r'(mysql://[^\s"\'<>]+:[^\s"\'<>]+@[^\s"\'<>]+/\w+)'),            "MySQL URI with password"),
     (re.compile(r'(mongodb://[^\s"\'<>]+:[^\s"\'<>]+@[^\s"\'<>]+(?:/\w+)?)'),    "MongoDB URI with password"),
@@ -363,23 +351,8 @@ SECRET_PATTERNS = [
     (re.compile(r'(client_id["\s:=]+["\']?([a-zA-Z0-9\-_.]{16,})["\']?)', re.I), "Client ID"),
     (re.compile(r'(tenant_id["\s:=]+["\']?([0-9a-f-]{36})["\']?)', re.I),       "Azure Tenant ID"),
     (re.compile(r'(subscription_id["\s:=]+["\']?([0-9a-f-]{36})["\']?)', re.I), "Azure Subscription ID"),
-
-    # Slack & Teams webhooks (additional patterns)
-    (re.compile(r'(https://hooks\.slack\.com/services/[A-Z0-9]+/[A-Z0-9]+/[a-zA-Z0-9]+)'), "Slack Webhook (already there, but ensure capture)"),
+    # Webhooks
     (re.compile(r'(https://[a-z0-9]+\.webhook\.office\.com/webhookb2/[a-f0-9-]+@[a-f0-9-]+)'), "Microsoft Teams Webhook"),
-
-    (re.compile(r'(?i)(?:password|passwd|pwd)["\s:=]+["\']([^"\']{8,})["\']'), "Hardcoded Password"),
-    (re.compile(r'(?i)(?:secret|client.?secret)["\s:=]+["\']([a-zA-Z0-9\-_.]{16,})["\']'), "Client Secret"),
-    (re.compile(r'(?i)(?:access.?token|auth.?token)["\s:=]+["\']([a-zA-Z0-9\-_.]{16,})["\']'), "Access Token"),
-    (re.compile(r'(eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)'), "HS256 JWT"),
-    (re.compile(r'(?i)sentry.{0,32}dsn.{0,32}(https://[a-z0-9]+@o\d+\.ingest\.sentry\.io/\d+)'), "Sentry DSN"),
-    (re.compile(r'(https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+)'), "Slack Webhook"),
-    (re.compile(r'(https://discord(?:app)?\.com/api/webhooks/\d+/[a-zA-Z0-9_-]+)'), "Discord Webhook"),
-    # --- ADD THE FOLLOWING LINES ---
-    (re.compile(r'(refresh_token["\s:=]+["\']?([a-zA-Z0-9\-_.=]+)["\']?)', re.I), "OAuth Refresh Token"),
-    (re.compile(r'(id_token["\s:=]+["\']?([a-zA-Z0-9\-_.=]+)["\']?)', re.I),      "OAuth ID Token"),
-    (re.compile(r'(access_token["\s:=]+["\']?([a-zA-Z0-9\-_.=]+)["\']?)', re.I),  "OAuth Access Token"),
-    (re.compile(r'(state["\s:=]+["\']?([a-zA-Z0-9\-_.=]{16,})["\']?)', re.I),     "OAuth State Parameter"),
 ]
 
 EMAIL_PATTERN = re.compile(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6})')
@@ -423,7 +396,7 @@ CLOUD_PATTERNS = [
     (re.compile(r'(apiVersion: v1\nkind: Secret\nmetadata:\n  name: [a-zA-Z0-9_-]+)'), "K8s Secret Manifest (multi-line)"),
 ]
 
-# Each tuple: (pattern, label, group_index)  — 0 means use full match
+# =================================================================
 DEBUG_PATTERNS = [
     (re.compile(r'(?i)//\s*SECURITY\s*[:\s]+(.{10,100})'), "SECURITY Comment", 1),
     (re.compile(r'(?i)//\s*WARNING\s*[:\s]+(.{10,100})'),  "WARNING Comment",  1),
@@ -468,9 +441,9 @@ NETWORK_PATTERNS = [
     (re.compile(r'["\'](https?://(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5})["\']'), "IP+port URL"),
 ]
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  NOISE FILTERS
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 NOISE_DOMAINS = {
     'www.w3.org', 'schemas.openxmlformats.org', 'schemas.microsoft.com',
@@ -506,12 +479,8 @@ NOISE_ENDPOINT_PATTERNS = [
     re.compile(r'^/[a-zA-Z]$'),
     re.compile(r'^http://$'),
     re.compile(r'_ngcontent'),
-    re.compile(r'^/api$'),
-    re.compile(r'^/v[0-9]+$'),
-    re.compile(r'^/\?'),
-    re.compile(r'^/\\u[0-9a-f]{4}'),   # Unicode escapes
-    re.compile(r'^\{\{'),
 ]
+
 
 NOISE_STRINGS = {
     'http://', 'https://', '/a', '/P', '/R', '/V', '/W',
@@ -527,9 +496,9 @@ FILE_NOISE = {
 
 SECRET_NOISE = ('example', 'placeholder', 'your_', 'xxxx', 'dummy', 'changeme', 'insert')
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  SAFE GROUP HELPER
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 def _sg(m, idx: int) -> str:
     """Safe group: returns stripped match.group(idx), falls back to group(0)."""
@@ -540,12 +509,12 @@ def _sg(m, idx: int) -> str:
         return m.group(0).strip()
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  ANALYZER ENGINE  (with line-number tracking)
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 class JSAnalyzer:
-    """Core analysis engine with line-number tracking and enhancement hooks."""
+    """Core analysis engine with line-number tracking."""
 
     def __init__(self, options: Optional[dict] = None):
         self._seen: set = set()
@@ -554,7 +523,7 @@ class JSAnalyzer:
         self.detected_frameworks: list = []
         self.cdn_summary: dict = {}
 
-    # ── validators ─────────────────────────────────────────────────
+    # =================================================================
 
     def _vld_endpoint(self, v: str) -> bool:
         if not v or len(v) < 3 or v in NOISE_STRINGS:
@@ -607,7 +576,7 @@ class JSAnalyzer:
             return False
         return True
 
-    # ── internal add ───────────────────────────────────────────────
+    # internal add
 
     def _add(self, cat: str, value: str, source: str, line: int,
              extra: Optional[dict] = None):
@@ -620,13 +589,13 @@ class JSAnalyzer:
             entry.update(extra)
         self.findings[cat].append(entry)
 
-    # ── main entry point ───────────────────────────────────────────
+    # main entry point
 
     def analyze_text(self, text: str, source_name: str = "<memory>") -> dict:
         self.findings.clear()
         self._seen.clear()
 
-        # Enhancement #1: Deobfuscation (always safe, improves detection)
+        # Deobfuscation (always safe, improves detection)
         if self.options.get('ast') or self.options.get('deobfuscate', True):
             text = deobfuscate(text)
 
@@ -651,14 +620,14 @@ class JSAnalyzer:
                     hi = mid - 1
             return lo + 1  # 1-based
 
-        # ── Endpoints (regex — original) ──
+        # Endpoints regex original
         for pat in ENDPOINT_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1)
                 if self._vld_endpoint(v):
                     self._add("endpoints", v, source_name, line_of(m.start()))
 
-        # ── Endpoints (AST — Enhancement #1) ──
+        # Endpoints (AST-enhanced)
         if self.options.get('ast') and HAS_ESPRIMA:
             for ep in extract_endpoints_ast(text):
                 v = ep.get('value', '')
@@ -666,21 +635,21 @@ class JSAnalyzer:
                     self._add("endpoints", v, source_name,
                               ep.get('line', 0), {'type': ep.get('type', 'AST')})
 
-        # ── URLs ──
+        # =================================================================
         for pat in URL_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1) or m.group(0).strip()
                 if self._vld_url(v):
                     self._add("urls", v, source_name, line_of(m.start()))
 
-        # ── Secrets (regex — original) ──
+        # Secrets regex original
         for pat, label in SECRET_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1)
                 if v and self._vld_secret(v):
                     masked = v[:10] + "..." + v[-4:] if len(v) > 20 else v
                     extra = {"type": label, "raw_len": len(v)}
-                    # Enhancement #2: Entropy + confidence
+                    # Entropy + confidence
                     if self.options.get('entropy'):
                         line_text = text.splitlines()[line_of(m.start())-1] if line_of(m.start()) <= len(text.splitlines()) else ''
                         extra['confidence'] = assess_confidence(v, line_text, label)
@@ -692,7 +661,7 @@ class JSAnalyzer:
                     self._add("secrets", f"{label}: {masked}", source_name,
                               line_of(m.start()), extra)
 
-        # Enhancement #2: JWT secrets + admin credentials + high-entropy
+        # JWT secrets + admin credentials + high-entropy
         if self.options.get('entropy'):
             for item in find_jwt_secrets(text, line_of):
                 item['source'] = source_name
@@ -707,26 +676,26 @@ class JSAnalyzer:
                 self._add("secrets", item['value'], source_name,
                           item['line'], item)
 
-        # ── Emails ──
+        # =================================================================
         for m in EMAIL_PATTERN.finditer(text):
             v = _sg(m, 1)
             if self._vld_email(v):
                 self._add("emails", v, source_name, line_of(m.start()))
 
-        # ── Files ──
+        # =================================================================
         for m in FILE_PATTERNS.finditer(text):
             v = _sg(m, 1)
             if self._vld_file(v):
                 self._add("files", v, source_name, line_of(m.start()))
 
-        # ── Source maps ──
+        # Source maps
         for pat in SOURCEMAP_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1) or m.group(0).strip()
                 if v and not v.startswith('data:'):
                     self._add("sourcemaps", v, source_name, line_of(m.start()))
 
-        # ── Cloud ──
+        # =================================================================
         for pat, label in CLOUD_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1) or m.group(0).strip()
@@ -734,7 +703,7 @@ class JSAnalyzer:
                     self._add("cloud", f"{label}: {v}", source_name,
                               line_of(m.start()), {"type": label})
 
-        # ── Debug ──
+        # =================================================================
         for pat, label, grp in DEBUG_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, grp)
@@ -743,14 +712,14 @@ class JSAnalyzer:
                     self._add("debug", f"{label}: {short}", source_name,
                               line_of(m.start()), {"type": label})
 
-        # ── GraphQL ──
+        # =================================================================
         for pat in GRAPHQL_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1)
                 if v:
                     self._add("graphql", v, source_name, line_of(m.start()))
 
-        # ── Network ──
+        # =================================================================
         for pat, label in NETWORK_PATTERNS:
             for m in pat.finditer(text):
                 v = _sg(m, 1) or m.group(0).strip()
@@ -758,11 +727,11 @@ class JSAnalyzer:
                     self._add("network", f"{label}: {v}", source_name,
                               line_of(m.start()), {"type": label})
 
-        # ════════════════════════════════════════════════════════════
-        #  ENHANCEMENT PASSES (opt-in via options)
-        # ════════════════════════════════════════════════════════════
+        # =================================================================
+        #  Extended analysis passes
+        # =================================================================
 
-        # Enhancement #3: Framework-specific endpoints
+        # Framework-specific endpoints
         if self.options.get('frameworks'):
             self.detected_frameworks = detect_frameworks(text)
             for item in extract_framework_endpoints(text, line_of):
@@ -775,68 +744,112 @@ class JSAnalyzer:
                 self._add("debug", item['value'], source_name,
                           item['line'], item)
 
-        # Enhancement #4: Swagger/OpenAPI detection
+        # Swagger/OpenAPI detection
         for item in detect_swagger_refs(text, line_of):
             self._add("endpoints", item['value'], source_name,
                       item['line'], item)
 
-        # Enhancement #5: Environment injection risks
+        # Environment injection risks
         for item in find_env_injection_risks(text, line_of):
             self._add("debug", item['value'], source_name,
                       item['line'], item)
 
-        # Enhancement #11: WebAssembly
+        # Web ssembly
         for item in detect_wasm(text, line_of):
             self._add("debug", item['value'], source_name,
                       item['line'], item)
 
-        # Enhancement #11: Browser storage keys
+        # Browser storage keys
         for item in detect_browser_storage(text, line_of):
             self._add("debug", item['value'], source_name,
                       item['line'], item)
 
-        # Enhancement #11: CORS misconfigurations
+        # CORS misconfigurations
         for item in detect_cors_misconfig(text, line_of):
             self._add("network", item['value'], source_name,
                       item['line'], item)
 
-        # Enhancement #11: CDN/cloud summary
+        # CDN/cloud summary
         self.cdn_summary = summarize_cdn_usage(text)
 
         return dict(self.findings)
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  I/O HELPERS
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
+
+def _validate_url(url: str) -> str:
+    """Validate URL scheme and structure. Raises ValueError on failure."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_URL_SCHEMES:
+        raise ValueError(f"Blocked URL scheme: {parsed.scheme!r}")
+    if not parsed.hostname:
+        raise ValueError("URL has no hostname")
+    return url
+
+
+def _validate_path(path: str) -> Path:
+    """Resolve path and guard against traversal. Raises ValueError on failure."""
+    resolved = Path(path).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Path does not exist: {path}")
+    return resolved
+
 
 def fetch_url(url: str) -> Optional[str]:
+    """Fetch URL content with scheme validation and size limit."""
     try:
-        req = Request(url, headers={"User-Agent": "JS-Analyzer/3.0"})
-        with urlopen(req, timeout=20) as resp:
-            return resp.read().decode("utf-8", errors="ignore")
+        _validate_url(url)
+    except ValueError as exc:
+        log.error("URL rejected: %s", exc)
+        return None
+    try:
+        req = Request(url, headers={"User-Agent": "JSVisor/4.0"})
+        with urlopen(req, timeout=15) as resp:
+            data = resp.read(MAX_FILE_SIZE + 1)
+            if len(data) > MAX_FILE_SIZE:
+                log.warning("Response too large (>%d bytes), truncated: %s",
+                            MAX_FILE_SIZE, url)
+                data = data[:MAX_FILE_SIZE]
+            return data.decode("utf-8", errors="ignore")
     except Exception as exc:
-        sys.stderr.write(f"[fetch] {url}: {exc}\n")
+        log.error("Fetch failed: %s: %s", url, exc)
         return None
 
 
 def read_file(path: str):
+    """Read file with size guard and symlink check."""
     try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            return fh.read(), path
+        p = Path(path).resolve()
+        if p.is_symlink():
+            log.warning("Skipping symlink: %s", path)
+            return None, path
+        size = p.stat().st_size
+        if size > MAX_FILE_SIZE:
+            log.warning("File too large (%d bytes), skipped: %s", size, path)
+            return None, path
+        with open(p, "r", encoding="utf-8", errors="ignore") as fh:
+            return fh.read(), str(p)
     except Exception as exc:
-        sys.stderr.write(f"[read] {path}: {exc}\n")
+        log.error("Read failed: %s: %s", path, exc)
         return None, path
 
 
 def collect_js_files(root: str) -> list[Path]:
-    """Collect all .js files from a directory, excluding noise paths."""
-    skip = {'node_modules', '.git', 'dist', '__pycache__', '.cache'}
+    """Collect .js files, excluding noise directories. Validates root path."""
+    root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        log.error("Not a directory: %s", root)
+        return []
+    skip = {'node_modules', '.git', 'dist', '__pycache__', '.cache',
+            'build', 'coverage', '.next', '.nuxt'}
     result = []
-    for fp in Path(root).rglob("*.js"):
+    for fp in root_path.rglob("*.js"):
         if not any(part in skip for part in fp.parts):
             result.append(fp)
     return sorted(result)
+
 
 
 def print_results(findings: dict, verbose: bool = False):
@@ -868,287 +881,6 @@ def print_results(findings: dict, verbose: bool = False):
     print(f"\nTotal: {total} finding(s)." if total else "\nNo findings.")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  HTML REPORT GENERATOR
-# ═══════════════════════════════════════════════════════════════════
-
-CAT_META = {
-    "endpoints":  ("Endpoints",       "#4fc1ff", "Routes and API paths discovered in the source."),
-    "urls":       ("URLs",            "#79c0ff", "Absolute URLs to external or internal services."),
-    "secrets":    ("Secrets",         "#ff7b72", "Potential credentials, tokens, and API keys."),
-    "emails":     ("Emails",          "#ffa657", "Email addresses embedded in the code."),
-    "files":      ("Files",           "#7ee787", "References to sensitive or interesting file types."),
-    "sourcemaps": ("Source Maps",     "#d2a8ff", "Source map references that may expose original code."),
-    "cloud":      ("Cloud Resources", "#56d364", "Cloud infrastructure identifiers (ARNs, buckets, etc.)."),
-    "debug":      ("Debug Artifacts", "#e3b341", "Debug statements, TODO/FIXME comments, env references."),
-    "graphql":    ("GraphQL",         "#bc8cff", "GraphQL operation names found in the source."),
-    "network":    ("Internal Network","#f85149", "Private IPs and internal hostnames."),
-}
-
-
-def generate_html_report(findings: dict, meta: dict) -> str:
-    """Render a self-contained single-file HTML report."""
-    scan_time   = meta.get("scan_time", datetime.datetime.now().isoformat(timespec="seconds"))
-    target      = meta.get("target", "Unknown")
-    file_count  = meta.get("file_count", 1)
-    total       = sum(len(v) for v in findings.values())
-    secret_count = len(findings.get("secrets", []))
-
-    # ── sidebar nav ──
-    sidebar_items = ""
-    for cat, items in findings.items():
-        n = len(items)
-        label, color, _ = CAT_META.get(cat, (cat.title(), "#ccc", ""))
-        badge_cls = "badge-danger" if cat == "secrets" and n else "badge"
-        sidebar_items += (
-            f'<li><a href="#cat-{cat}" class="nav-link" onclick="showCat(\'{cat}\')">'
-            f'<span class="nav-dot" style="background:{color}"></span>'
-            f'{label}'
-            f'<span class="{badge_cls}">{n}</span>'
-            f'</a></li>\n'
-        )
-
-    # ── summary cards ──
-    cards = ""
-    for cat, items in findings.items():
-        n = len(items)
-        if not n:
-            continue
-        label, color, desc = CAT_META.get(cat, (cat.title(), "#ccc", ""))
-        cards += f'''
-        <div class="summary-card" onclick="showCat('{cat}')" style="border-top:3px solid {color}">
-          <div class="card-count" style="color:{color}">{n}</div>
-          <div class="card-label">{label}</div>
-          <div class="card-desc">{desc}</div>
-        </div>'''
-
-    # ── per-category sections ──
-    sections = ""
-    for cat, items in findings.items():
-        if not items:
-            continue
-        label, color, desc = CAT_META.get(cat, (cat.title(), "#ccc", ""))
-
-        # group by file
-        by_file: dict[str, list] = defaultdict(list)
-        for item in items:
-            by_file[item.get("source", "<unknown>")].append(item)
-
-        rows_html = ""
-        row_n = 0
-        for src, src_items in sorted(by_file.items()):
-            file_label = Path(src).name if src != "<unknown>" else src
-            rows_html += f'''
-            <tr class="file-row">
-              <td colspan="3" class="file-header" title="{src}">
-                <span class="file-icon">F</span> {file_label}
-                <span class="file-count">{len(src_items)} finding(s)</span>
-              </td>
-            </tr>'''
-            for item in src_items:
-                row_n += 1
-                ln = item.get("line", "?")
-                val = item["value"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                sev_cls = "sev-high" if cat == "secrets" else ("sev-med" if cat in ("network", "cloud") else "sev-low")
-                rows_html += f'''
-            <tr class="finding-row {sev_cls}">
-              <td class="ln-col">{ln}</td>
-              <td class="val-col"><code>{val}</code></td>
-              <td class="sev-col"><span class="sev-badge {sev_cls}-badge">{cat.upper()}</span></td>
-            </tr>'''
-
-        sections += f'''
-      <section id="cat-{cat}" class="cat-section" style="display:none">
-        <div class="section-header" style="border-left:4px solid {color}">
-          <h2>{label}</h2>
-          <p class="section-desc">{desc}</p>
-          <div class="section-stats">{len(items)} finding(s) across {len(by_file)} file(s)</div>
-        </div>
-        <div class="table-wrap">
-          <table class="findings-table">
-            <thead>
-              <tr>
-                <th class="ln-col">Line</th>
-                <th>Value</th>
-                <th class="sev-col">Category</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows_html}
-            </tbody>
-          </table>
-        </div>
-      </section>'''
-
-    # ── full HTML ──
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>JS Analyzer Report</title>
-<style>
-:root {{
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface2: #1c2128;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #388bfd;
-  --danger: #f85149;
-  --warn: #e3b341;
-  --ok: #3fb950;
-  --radius: 6px;
-  --sidebar-w: 230px;
-}}
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ background: var(--bg); color: var(--text); font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; font-size:14px; display:flex; min-height:100vh; }}
-
-/* Sidebar */
-.sidebar {{ width: var(--sidebar-w); min-height: 100vh; background: var(--surface); border-right:1px solid var(--border); position:fixed; top:0;left:0;bottom:0; display:flex; flex-direction:column; overflow-y:auto; z-index:10; }}
-.sidebar-logo {{ padding:20px 16px 12px; border-bottom:1px solid var(--border); }}
-.sidebar-logo h1 {{ font-size:15px; font-weight:700; color:var(--text); letter-spacing:.5px; }}
-.sidebar-logo .sub {{ font-size:11px; color:var(--muted); margin-top:3px; }}
-.nav-section {{ padding:12px 0; }}
-.nav-section-label {{ font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.8px; padding:0 16px 6px; }}
-.nav-link {{ display:flex; align-items:center; gap:8px; padding:6px 16px; color:var(--muted); text-decoration:none; cursor:pointer; transition:background .15s,color .15s; font-size:13px; }}
-.nav-link:hover, .nav-link.active {{ background:var(--surface2); color:var(--text); }}
-.nav-dot {{ width:8px; height:8px; border-radius:50%; flex-shrink:0; }}
-.badge, .badge-danger {{ margin-left:auto; font-size:11px; font-weight:600; padding:1px 6px; border-radius:10px; }}
-.badge {{ background:#21262d; color:var(--muted); }}
-.badge-danger {{ background:#3d1f20; color:var(--danger); }}
-.nav-overview {{ font-weight:600; color:var(--text) !important; }}
-.sidebar-footer {{ padding:12px 16px; border-top:1px solid var(--border); font-size:11px; color:var(--muted); margin-top:auto; }}
-
-/* Main */
-.main {{ margin-left:var(--sidebar-w); flex:1; padding:24px; max-width:1200px; }}
-
-/* Header */
-.report-header {{ margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border); }}
-.report-header h2 {{ font-size:20px; font-weight:700; }}
-.report-meta {{ display:flex; gap:24px; margin-top:10px; flex-wrap:wrap; }}
-.meta-item {{ font-size:12px; color:var(--muted); }}
-.meta-item strong {{ color:var(--text); }}
-.alert-banner {{ background:#3d1f20; border:1px solid #6e2b2b; border-radius:var(--radius); padding:10px 16px; margin-bottom:20px; display:flex; align-items:center; gap:10px; color:#ff7b72; font-size:13px; font-weight:500; }}
-.alert-banner.hidden {{ display:none; }}
-
-/* Summary cards */
-.cards-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:12px; margin-bottom:28px; }}
-.summary-card {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; cursor:pointer; transition:border-color .15s,background .15s; }}
-.summary-card:hover {{ background:var(--surface2); border-color:var(--accent); }}
-.card-count {{ font-size:28px; font-weight:700; line-height:1; }}
-.card-label {{ font-size:12px; font-weight:600; margin-top:4px; }}
-.card-desc {{ font-size:11px; color:var(--muted); margin-top:4px; line-height:1.4; }}
-
-/* Sections */
-.cat-section {{ animation:fadeIn .15s ease; }}
-@keyframes fadeIn {{ from{{opacity:0;transform:translateY(4px)}} to{{opacity:1;transform:none}} }}
-.section-header {{ padding:0 0 16px 12px; margin-bottom:16px; border-bottom:1px solid var(--border); }}
-.section-header h2 {{ font-size:18px; font-weight:700; }}
-.section-desc {{ color:var(--muted); font-size:13px; margin-top:4px; }}
-.section-stats {{ font-size:12px; color:var(--accent); margin-top:6px; font-weight:500; }}
-
-/* Table */
-.table-wrap {{ overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }}
-.findings-table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-.findings-table th {{ background:var(--surface); color:var(--muted); font-weight:600; text-align:left; padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid var(--border); position:sticky; top:0; }}
-.findings-table td {{ padding:7px 12px; border-bottom:1px solid #21262d; vertical-align:middle; }}
-.findings-table tr:last-child td {{ border-bottom:none; }}
-.findings-table tr.finding-row:hover {{ background:var(--surface); }}
-code {{ font-family:'JetBrains Mono','Fira Code',monospace; font-size:12px; word-break:break-all; }}
-.ln-col {{ width:60px; color:var(--muted); font-family:monospace; font-size:12px; }}
-.sev-col {{ width:110px; }}
-.file-header {{ background:#1c2128; font-size:12px; font-weight:600; color:var(--muted); padding:6px 12px !important; }}
-.file-icon {{ display:inline-block; background:#30363d; color:var(--text); font-size:10px; border-radius:3px; padding:0 4px; margin-right:4px; font-weight:700; }}
-.file-count {{ float:right; font-weight:400; color:var(--accent); }}
-.sev-badge {{ font-size:10px; font-weight:700; padding:2px 6px; border-radius:4px; letter-spacing:.3px; }}
-.sev-high-badge  {{ background:#3d1f20; color:#ff7b72; }}
-.sev-med-badge   {{ background:#332200; color:#e3b341; }}
-.sev-low-badge   {{ background:#1a2632; color:#4fc1ff; }}
-
-/* Overview page */
-#overview {{ }}
-.overview-section {{ margin-bottom:32px; }}
-.overview-title {{ font-size:14px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:12px; }}
-.overview-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }}
-.stat-pill {{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; display:flex; justify-content:space-between; align-items:center; }}
-.stat-label {{ font-size:12px; color:var(--muted); }}
-.stat-val {{ font-size:16px; font-weight:700; }}
-</style>
-</head>
-<body>
-
-<nav class="sidebar">
-  <div class="sidebar-logo">
-    <h1>JS Analyzer</h1>
-    <div class="sub">Security Report</div>
-  </div>
-  <div class="nav-section">
-    <div class="nav-section-label">Navigation</div>
-    <ul style="list-style:none">
-      <li><a href="#overview" class="nav-link nav-overview active" onclick="showCat('overview')">
-        Overview
-        <span class="badge">{total}</span>
-      </a></li>
-    </ul>
-  </div>
-  <div class="nav-section">
-    <div class="nav-section-label">Categories</div>
-    <ul style="list-style:none">
-      {sidebar_items}
-    </ul>
-  </div>
-  <div class="sidebar-footer">
-    Scanned {file_count} file(s)<br>
-    {scan_time}
-  </div>
-</nav>
-
-<main class="main">
-  <div class="report-header">
-    <h2>Analysis Report</h2>
-    <div class="report-meta">
-      <div class="meta-item"><strong>Target:</strong> {target}</div>
-      <div class="meta-item"><strong>Files scanned:</strong> {file_count}</div>
-      <div class="meta-item"><strong>Total findings:</strong> {total}</div>
-      <div class="meta-item"><strong>Scanned:</strong> {scan_time}</div>
-    </div>
-  </div>
-
-  <div class="alert-banner {'hidden' if not secret_count else ''}">
-    WARNING: {secret_count} potential secret(s) detected. Review immediately.
-  </div>
-
-  <!-- Overview -->
-  <div id="overview" class="cat-section">
-    <div class="overview-section">
-      <div class="overview-title">Summary</div>
-      <div class="cards-grid">
-        {cards}
-      </div>
-    </div>
-  </div>
-
-  <!-- Per-category sections -->
-  {sections}
-</main>
-
-<script>
-const navLinks = document.querySelectorAll('.nav-link');
-function showCat(cat) {{
-  document.querySelectorAll('.cat-section').forEach(s => s.style.display = 'none');
-  const el = document.getElementById(cat === 'overview' ? 'overview' : 'cat-' + cat);
-  if (el) el.style.display = 'block';
-  navLinks.forEach(l => l.classList.remove('active'));
-  const active = document.querySelector('.nav-link[onclick*="\\'' + cat + '\\'"]');
-  if (active) active.classList.add('active');
-}}
-// Show overview on load
-showCat('overview');
-</script>
-</body>
-</html>"""
 
 
 def export_report(findings: dict, target: str, file_count: int, out_base: str,
@@ -1179,24 +911,21 @@ def export_report(findings: dict, target: str, file_count: int, out_base: str,
 
     paths = {}
 
-    # JSON — always produced
+    # JSON -- always produced
     if 'json' in formats:
         json_path = out_base + "_findings.json"
         with open(json_path, "w", encoding="utf-8") as fh:
             json.dump({"meta": meta, "findings": findings}, fh, indent=2)
         paths['json'] = json_path
 
-    # HTML — use enhanced version if available
+    # HTML report
     if 'html' in formats:
         html_path = out_base + "_report.html"
         with open(html_path, "w", encoding="utf-8") as fh:
-            if generate_html_report_v2:
-                fh.write(generate_html_report_v2(findings, meta))
-            else:
-                fh.write(generate_html_report(findings, meta))
+            fh.write(_html_report_impl(findings, meta))
         paths['html'] = html_path
 
-    # SARIF (Enhancement #6)
+    # SARIF
     if 'sarif' in formats:
         sarif_path = out_base + ".sarif"
         sarif_data = generate_sarif(findings, target)
@@ -1204,7 +933,7 @@ def export_report(findings: dict, target: str, file_count: int, out_base: str,
             json.dump(sarif_data, fh, indent=2)
         paths['sarif'] = sarif_path
 
-    # Postman collection (Enhancement #6)
+    # Postman collection
     if 'postman' in formats:
         postman_path = out_base + "_postman.json"
         postman_data = generate_postman_collection(findings, base_url)
@@ -1212,7 +941,7 @@ def export_report(findings: dict, target: str, file_count: int, out_base: str,
             json.dump(postman_data, fh, indent=2)
         paths['postman'] = postman_path
 
-    # Markdown summary (Enhancement #6)
+    # Markdown summary
     if 'markdown' in formats:
         md_path = out_base + "_summary.md"
         md_content = generate_markdown_summary(findings, target, meta)
@@ -1220,7 +949,7 @@ def export_report(findings: dict, target: str, file_count: int, out_base: str,
             fh.write(md_content)
         paths['markdown'] = md_path
 
-    # Encrypted ZIP (Enhancement #10)
+    # Encrypted ZIP
     if encrypt and paths:
         zip_path = out_base + "_reports.zip"
         create_encrypted_zip(list(paths.values()), zip_path, password or None)
@@ -1250,9 +979,9 @@ def serve_report(html_path: str, port: int = 7777):
         srv.server_close()
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  TUI CATEGORIES
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 CATEGORIES = {
     "endpoints":  ("Endpoints",        "#4fc1ff"),
@@ -1267,18 +996,18 @@ CATEGORIES = {
     "network":    ("Network",          "#f85149"),
 }
 
-# ═══════════════════════════════════════════════════════════════════
-#  TUI CSS  — fixed, no layout ambiguity
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
+# =================================================================
+# =================================================================
 
 TUI_CSS = """
-/* ── Base ────────────────────────────────────── */
+/* Base */
 Screen {
     background: #0d1117;
     layers: base overlay;
 }
 
-/* ── Top bar ─────────────────────────────────── */
+/* Top bar */
 #topbar {
     dock: top;
     height: 4;
@@ -1353,13 +1082,13 @@ Screen {
 }
 #btn-clr:hover  { background: #21262d; color: #e6edf3; }
 
-/* ── Body ────────────────────────────────────── */
+/* Body */
 #body {
     layout: horizontal;
     height: 1fr;
 }
 
-/* ── Sidebar ─────────────────────────────────── */
+/* Sidebar */
 #sidebar {
     width: 26;
     background: #010409;
@@ -1396,14 +1125,14 @@ Screen {
     border-left: solid #388bfd;
 }
 
-/* ── Content area ────────────────────────────── */
+/* Content area */
 #content {
     width: 1fr;
     height: 100%;
     layout: vertical;
 }
 
-/* ── Findings panel ──────────────────────────── */
+/* Findings panel */
 #findings-wrap {
     height: 2fr;
     border: solid #21262d;
@@ -1433,7 +1162,7 @@ DataTable > .datatable--even-row {
     background: #0a0e14;
 }
 
-/* ── Log panel ───────────────────────────────── */
+/* Log panel */
 #log-wrap {
     height: 1fr;
     border: solid #21262d;
@@ -1449,7 +1178,7 @@ Log {
     padding: 0 1;
 }
 
-/* ── Status bar ──────────────────────────────── */
+/* Status bar */
 #statusbar {
     dock: bottom;
     height: 1;
@@ -1472,9 +1201,9 @@ Log {
 }
 """
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  TUI APPLICATION
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 def run_tui(initial_target: Optional[str] = None):
     try:
@@ -1489,7 +1218,7 @@ def run_tui(initial_target: Optional[str] = None):
         sys.exit(1)
 
     class JSAnalyzerApp(App):
-        TITLE = "JS Analyzer"
+        TITLE = "JSVisor"
         CSS   = TUI_CSS
         BINDINGS = [
             Binding("ctrl+r", "run",        "Analyze", show=False),
@@ -1510,7 +1239,7 @@ def run_tui(initial_target: Optional[str] = None):
             self._file_count: int  = 0
             self._target:     str  = initial_target or ""
 
-        # ── layout ────────────────────────────────────────────────
+        # =================================================================
 
         def compose(self) -> ComposeResult:
             with Horizontal(id="topbar"):
@@ -1539,27 +1268,27 @@ def run_tui(initial_target: Optional[str] = None):
                         yield Log(id="log", auto_scroll=True)
 
             with Horizontal(id="statusbar"):
-                yield Static("Ready — enter a target and press Ctrl+R", id="status-lbl")
+                yield Static("Ready -- enter a target and press Ctrl+R", id="status-lbl")
                 yield Static(
                     "^R Analyze  ^E Export  ^S Serve  ^L Clear  ^H Log  ^C Quit",
                     id="keybinds",
                 )
 
-        # ── mount ─────────────────────────────────────────────────
+        # =================================================================
 
         def on_mount(self) -> None:
             dt: DataTable = self.query_one("#dt", DataTable)
             dt.add_columns("Line", "Value", "Source")
             self._set_border_titles()
             self._highlight_cat(self._active_cat)
-            self._write_log("JS Analyzer ready.  Enter a target and press Ctrl+R.")
+            self._write_log("JSVisor ready.  Enter a target and press Ctrl+R.")
             self._write_log("Supports: local .js file, remote URL, directory, project root.")
 
         def _set_border_titles(self):
             self.query_one("#findings-wrap").border_title = "Findings"
             self.query_one("#log-wrap").border_title      = "Log"
 
-        # ── sidebar ───────────────────────────────────────────────
+        # =================================================================
 
         def _highlight_cat(self, cat: str):
             for c in CATEGORIES:
@@ -1570,7 +1299,7 @@ def run_tui(initial_target: Optional[str] = None):
             label, _ = CATEGORIES[cat]
             self.query_one(f"#cat-{cat}", Button).label = f"{label}  [{n}]"
 
-        # ── button dispatch ───────────────────────────────────────
+        # button dispatch
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             bid = event.button.id or ""
@@ -1588,7 +1317,7 @@ def run_tui(initial_target: Optional[str] = None):
                 self._highlight_cat(cat)
                 self._populate_table(cat)
 
-        # ── actions ───────────────────────────────────────────────
+        # =================================================================
 
         def action_run(self) -> None:
             target = self.query_one("#inp", Input).value.strip()
@@ -1607,7 +1336,7 @@ def run_tui(initial_target: Optional[str] = None):
 
         def action_export(self) -> None:
             if not self._findings:
-                self._set_status("Nothing to export — run a scan first.")
+                self._set_status("Nothing to export -- run a scan first.")
                 return
             self._do_export()
 
@@ -1636,7 +1365,7 @@ def run_tui(initial_target: Optional[str] = None):
             lw = self.query_one("#log-wrap")
             lw.display = not lw.display
 
-        # ── background scan ───────────────────────────────────────
+        # background scan
 
         @work(thread=True)
         def _do_scan(self, target: str) -> None:
@@ -1702,7 +1431,7 @@ def run_tui(initial_target: Optional[str] = None):
                     )
                 )
 
-        # ── post-scan ─────────────────────────────────────────────
+        # post scan
 
         def _finish_scan(self, findings: dict) -> None:
             self._findings = findings
@@ -1714,7 +1443,7 @@ def run_tui(initial_target: Optional[str] = None):
 
             self._populate_table(self._active_cat)
 
-            msg = f"Done — {total} finding(s) across {self._file_count} file(s)."
+            msg = f"Done -- {total} finding(s) across {self._file_count} file(s)."
             if sc:
                 msg += f"  WARNING: {sc} secret(s) found."
             self._set_status(msg)
@@ -1728,7 +1457,7 @@ def run_tui(initial_target: Optional[str] = None):
             _, col_color = CATEGORIES.get(cat, ("", "#e6edf3"))
 
             self.query_one("#findings-wrap").border_title = (
-                f"Findings — {CATEGORIES[cat][0]}  ({len(items)})"
+                f"Findings -- {CATEGORIES[cat][0]}  ({len(items)})"
             )
 
             for item in items:
@@ -1741,7 +1470,7 @@ def run_tui(initial_target: Optional[str] = None):
                 )
                 dt.add_row(ln, val, src)
 
-        # ── export ────────────────────────────────────────────────
+        # =================================================================
 
         def _do_export(self) -> None:
             target   = self.query_one("#inp", Input).value.strip()
@@ -1760,7 +1489,7 @@ def run_tui(initial_target: Optional[str] = None):
                 self._set_status(f"Export failed: {exc}")
                 self._write_log(f"Export error: {exc}")
 
-        # ── helpers ───────────────────────────────────────────────
+        # =================================================================
 
         def _set_status(self, msg: str) -> None:
             try:
@@ -1785,62 +1514,66 @@ def run_tui(initial_target: Optional[str] = None):
     JSAnalyzerApp(initial_target=initial_target).run()
 
 
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 #  ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════
+# =================================================================
 
 def main():
-    p = argparse.ArgumentParser(
-        description="JS Analyzer v4.0 — Advanced JavaScript Security Scanner"
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s: %(message)s",
     )
-    # Original flags (backward compatible)
+
+    p = argparse.ArgumentParser(
+        description="JSVisor v4.0 -- Advanced JavaScript Security Scanner"
+    )
     p.add_argument("-f", "--file",      help="Single local JS file")
     p.add_argument("-u", "--url",       help="Remote JS URL")
-    p.add_argument("-d", "--directory", help="Directory / project root (scanned recursively)")
+    p.add_argument("-d", "--directory", help="Directory to scan recursively")
     p.add_argument("-o", "--output",    help="Output base name")
     p.add_argument("-v", "--verbose",   action="store_true", help="Show file:line per finding")
-    p.add_argument("--tui",            action="store_true",  help="Launch interactive TUI (default when no flags)")
-    p.add_argument("--serve",          action="store_true",  help="After export, serve HTML report in browser")
-    p.add_argument("--port",           type=int, default=7777, help="Port for --serve (default 7777)")
+    p.add_argument("--tui",            action="store_true",  help="Launch interactive TUI")
+    p.add_argument("--serve",          action="store_true",  help="Serve HTML report in browser")
+    p.add_argument("--port",           type=int, default=7777, help="Port for --serve")
 
-    # Enhancement #1: AST analysis
-    p.add_argument("--ast",            action="store_true", help="Enable AST-based analysis (requires esprima)")
-
-    # Enhancement #2: Entropy
-    p.add_argument("--entropy",        action="store_true", help="Enable Shannon entropy scoring for secrets")
-
-    # Enhancement #3: Frameworks
-    p.add_argument("--frameworks",     action="store_true", help="Enable framework-specific detection")
-
-    # Enhancement #4: Network
+    # Analysis options
+    p.add_argument("--ast",            action="store_true", help="Enable AST-based analysis")
+    p.add_argument("--entropy",        action="store_true", help="Enable entropy scoring for secrets")
+    p.add_argument("--frameworks",     action="store_true", help="Enable framework detection")
     p.add_argument("--base-url",       default="", help="Base URL for resolving relative endpoints")
     p.add_argument("--graphql-introspect", action="store_true", help="Perform GraphQL introspection")
 
-    # Enhancement #6: Output formats
+    # Output formats
     p.add_argument("--format",         nargs="+", default=["json", "html"],
                    choices=["json", "html", "sarif", "postman", "markdown"],
                    help="Output formats (default: json html)")
 
-    # Enhancement #7: Performance
+    # Performance
     p.add_argument("--threads",        type=int, default=4, help="Thread count for directory scanning")
     p.add_argument("--incremental",    action="store_true", help="Skip unchanged files (uses cache)")
     p.add_argument("--respect-gitignore", action="store_true", help="Respect .gitignore patterns")
 
-    # Enhancement #8: Integration
+    # Integration
     p.add_argument("--daemon",         action="store_true", help="Start HTTP daemon mode")
     p.add_argument("--daemon-port",    type=int, default=8080, help="Daemon port (default 8080)")
     p.add_argument("--notify-webhook", default="", help="Slack/Teams webhook URL for notifications")
     p.add_argument("--install-hook",   action="store_true", help="Install pre-commit hook")
 
-    # Enhancement #10: Security
+    # Security
     p.add_argument("--redact",         action="store_true", help="Redact secrets in reports")
     p.add_argument("--no-network",     action="store_true", help="Disable all remote fetches")
     p.add_argument("--encrypt",        action="store_true", help="Create password-protected ZIP")
     p.add_argument("--password",       default="", help="Password for encrypted ZIP")
 
+    # Verbosity
+    p.add_argument("--debug",          action="store_true", help="Enable debug logging")
+
     args = p.parse_args()
 
-    # ── Install pre-commit hook ──
+    if args.debug:
+        logging.getLogger("js_analyzer").setLevel(logging.DEBUG)
+
+    # Install pre-commit hook
     if args.install_hook:
         hook_src = Path(__file__).parent / 'templates' / 'pre-commit'
         hook_dst = Path('.git') / 'hooks' / 'pre-commit'
@@ -1852,41 +1585,45 @@ def main():
             print(f"Template not found: {hook_src}")
         return
 
-    # ── Daemon mode ──
+    # Daemon mode
     if args.daemon:
         def daemon_analyze(target, options=None):
+            resolved = Path(target).resolve()
+            if not resolved.exists():
+                return {'error': f'Target not found: {target}'}
             opts = options or {}
-            opts.update({'ast': args.ast, 'entropy': args.entropy, 'frameworks': args.frameworks})
-            analyzer = JSAnalyzer(options=opts)
+            opts.update({'ast': args.ast, 'entropy': args.entropy,
+                         'frameworks': args.frameworks})
+            a = JSAnalyzer(options=opts)
             combined = defaultdict(list)
-            if os.path.isfile(target):
-                content, src = read_file(target)
+            if resolved.is_file():
+                content, src = read_file(str(resolved))
                 if content:
-                    for cat, items in analyzer.analyze_text(content, src).items():
+                    for cat, items in a.analyze_text(content, src).items():
                         combined[cat].extend(items)
-            elif os.path.isdir(target):
-                js_files = collect_js_files(target)
-                for fp in js_files:
+            elif resolved.is_dir():
+                for fp in collect_js_files(str(resolved)):
                     content, src = read_file(str(fp))
                     if content:
-                        for cat, items in analyzer.analyze_text(content, src).items():
+                        for cat, items in a.analyze_text(content, src).items():
                             combined[cat].extend(items)
-            return {'findings': dict(combined), 'total': sum(len(v) for v in combined.values())}
+            return {'findings': dict(combined),
+                    'total': sum(len(v) for v in combined.values())}
         start_daemon(args.daemon_port, daemon_analyze)
         return
 
-    # Default to TUI when called bare
+    # TUI mode (default when no input specified)
     if args.tui or not any([args.file, args.url, args.directory]):
         run_tui(initial_target=args.file or args.url or args.directory)
         return
 
-    # ── CLI mode ──────────────────────────────────────────────────
+    # CLI mode
     options = {
         'ast': args.ast,
         'entropy': args.entropy,
         'frameworks': args.frameworks,
     }
-    analyzer   = JSAnalyzer(options=options)
+    analyzer = JSAnalyzer(options=options)
     all_finds: dict = defaultdict(list)
     file_count = 0
 
@@ -1899,8 +1636,8 @@ def main():
     if args.file:
         target = args.file
         if args.no_network and args.file.startswith(('http://', 'https://')):
-            print("ERROR: --no-network prevents fetching URLs.")
-            return
+            log.error("--no-network prevents fetching URLs")
+            sys.exit(1)
         content, src = read_file(args.file)
         if content:
             merge(analyzer.analyze_text(content, src))
@@ -1909,8 +1646,8 @@ def main():
     elif args.url:
         target = args.url
         if args.no_network:
-            print("ERROR: --no-network prevents fetching URLs.")
-            return
+            log.error("--no-network prevents fetching URLs")
+            sys.exit(1)
         content = fetch_url(args.url)
         if content:
             merge(analyzer.analyze_text(content, args.url))
@@ -1918,25 +1655,17 @@ def main():
 
     elif args.directory:
         target = args.directory
-
-        # Enhancement #7: Enhanced file collection
-        try:
-            js_files, cache = collect_js_files_enhanced(
-                args.directory,
-                respect_gitignore=args.respect_gitignore,
-                incremental=args.incremental,
-            )
-        except NameError:
-            js_files = collect_js_files(args.directory)
-            cache = {}
-
+        js_files, cache = collect_js_files_enhanced(
+            args.directory,
+            respect_gitignore=args.respect_gitignore,
+            incremental=args.incremental,
+        )
         if not js_files:
             print(f"No .js files found in {args.directory}")
             return
 
         print(f"Scanning {len(js_files)} file(s) with {args.threads} thread(s)...")
 
-        # Enhancement #7: Multi-threaded scanning
         if args.threads > 1:
             def scan_single(filepath):
                 a = JSAnalyzer(options=options)
@@ -1944,15 +1673,9 @@ def main():
                 if content:
                     return a.analyze_text(content, src)
                 return {}
-            try:
-                result = scan_files_threaded(js_files, scan_single, args.threads)
-                for cat, items in result.items():
-                    all_finds[cat].extend(items)
-            except NameError:
-                for fp in js_files:
-                    content, src = read_file(str(fp))
-                    if content:
-                        merge(analyzer.analyze_text(content, src))
+            result = scan_files_threaded(js_files, scan_single, args.threads)
+            for cat, items in result.items():
+                all_finds[cat].extend(items)
         else:
             for fp in js_files:
                 content, src = read_file(str(fp))
@@ -1961,14 +1684,9 @@ def main():
 
         file_count = len(js_files)
 
-        # Save incremental cache
         if args.incremental and cache:
-            try:
-                save_cache(args.directory, cache)
-            except NameError:
-                pass
+            save_cache(args.directory, cache)
 
-        # Enhancement #5: Repository analysis
         pkg_info = parse_package_json(args.directory)
         if pkg_info:
             print(f"\nPackage: {pkg_info.get('name')} v{pkg_info.get('version')}")
@@ -1976,7 +1694,8 @@ def main():
             if vulns:
                 print(f"  WARNING: {len(vulns)} known vulnerable dependencies:")
                 for v in vulns:
-                    print(f"    {v['package']} {v['installed']} — {v['cve']} ({v['severity']})")
+                    print(f"    {v['package']} {v['installed']} -- "
+                          f"{v['cve']} ({v['severity']})")
 
         git_info = extract_git_info(args.directory)
         if git_info:
@@ -1984,7 +1703,7 @@ def main():
             commit = git_info.get('commit', '?')
             print(f"  Git: {branch} @ {commit}")
             if git_info.get('exposed_config'):
-                print("  WARNING: .git/config is exposed!")
+                print("  WARNING: .git/config is exposed")
 
         print("Done.")
 
@@ -1993,23 +1712,20 @@ def main():
         print("No findings.")
         return
 
-    # Enhancement #4: Resolve endpoints
     if args.base_url and 'endpoints' in findings:
-        findings['endpoints'] = resolve_endpoints(findings['endpoints'], args.base_url)
+        findings['endpoints'] = resolve_endpoints(
+            findings['endpoints'], args.base_url)
 
-    # Enhancement #4: API version detection
     if 'endpoints' in findings:
         ver_info = detect_api_versions(findings['endpoints'])
         if ver_info.get('versions_found'):
             print(f"\nAPI versions detected: {ver_info['versions_found']}")
 
-    # Print results (with optional redaction)
     if args.redact:
         print_results(redact_findings(findings, True), args.verbose)
     else:
         print_results(findings, args.verbose)
 
-    # Export
     if args.output:
         meta_extra = {
             'frameworks': getattr(analyzer, 'detected_frameworks', []),
@@ -2033,11 +1749,11 @@ def main():
             print(f"\nHTML : {paths['html']}")
             serve_report(paths['html'], args.port)
 
-    # Enhancement #8: Notifications
     if args.notify_webhook:
-        os.environ['JS_ANALYZER_SLACK_WEBHOOK'] = args.notify_webhook
+        os.environ['JSVISOR_SLACK_WEBHOOK'] = args.notify_webhook
     notify(findings, target, args.no_network)
 
 
 if __name__ == "__main__":
-    main()
+    main()
+

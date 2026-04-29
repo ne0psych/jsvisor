@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #5 — Repository & Dependency Analysis
+Repository & Dependency Analysis
 
 - Parse package.json for dependencies and known vulnerabilities
 - Detect process.env.* without default values (env injection risk)

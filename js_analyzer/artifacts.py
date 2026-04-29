@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #11 — Additional Artifact Detection
-
-- WebAssembly (.wasm imports, WebAssembly.instantiate)
-- Browser storage keys (localStorage, sessionStorage, IndexedDB)
-- CORS misconfiguration detection
-- CDN/cloud provider usage summary
+Artifact detection: WebAssembly, browser storage, CORS, CDN.
 """
 
 import re

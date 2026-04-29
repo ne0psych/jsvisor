@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #4 — Enhanced Network & Infrastructure Discovery
+Enhanced Network & Infrastructure Discovery
 
 - Resolve relative endpoints to absolute URLs using base URL
 - Detect API versioning schemes and suggest bruteforce list
@@ -148,7 +148,7 @@ def perform_graphql_introspection(endpoint_url: str, no_network: bool = False) -
             data=payload,
             headers={
                 'Content-Type': 'application/json',
-                'User-Agent': 'JS-Analyzer/4.0',
+                'User-Agent': 'JSVisor/4.0',
             },
         )
         with urlopen(req, timeout=10) as resp:

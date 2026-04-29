@@ -1,12 +1,12 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="js-analyzer",
+    name="jsvisor",
     version="4.0.0",
-    description="Advanced JavaScript Security Scanner — extract endpoints, secrets, cloud refs and more",
+    description="JSVisor -- Advanced JavaScript Security Scanner",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    author="JS Analyzer Contributors",
+    author="JSVisor Contributors",
     license="MIT",
     packages=find_packages(),
     py_modules=["js_analyzer"],
@@ -22,7 +22,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "js-analyzer=js_analyzer:main",
+            "jsvisor=js_analyzer:main",
         ],
     },
     classifiers=[

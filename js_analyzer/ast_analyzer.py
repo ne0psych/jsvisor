@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Enhancement #1 — Advanced Dynamic Analysis (AST-based)
+Advanced Dynamic Analysis (AST-based)
 
 - AST parsing via esprima for endpoint extraction
 - Deobfuscation: \\xHH, \\uXXXX escape unpacking
