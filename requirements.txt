@@ -1,0 +1,5 @@
+textual>=0.40.0
+esprima>=4.0.1
+pathspec>=0.11.0
+pycryptodome>=3.19.0
+rich>=13.0.0

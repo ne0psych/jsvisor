@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""
+Pre-commit hook for JS Analyzer.
+Blocks commits if high-confidence secrets are found in staged .js files.
+
+Installation:
+  python js_analyzer.py --install-hook
+  # or copy this file to .git/hooks/pre-commit and chmod +x
+"""
+
+import subprocess
+import sys
+import os
+
+
+def get_staged_js_files():
+    """Get list of staged .js files."""
+    result = subprocess.run(
+        ['git', 'diff', '--cached', '--name-only', '--diff-filter=ACM'],
+        capture_output=True, text=True,
+    )
+    return [f for f in result.stdout.strip().split('\n') if f.endswith('.js') and f]
+
+
+def main():
+    js_files = get_staged_js_files()
+    if not js_files:
+        sys.exit(0)
+
+    # Find js_analyzer.py relative to the hook location
+    hook_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(os.path.dirname(hook_dir))
+    analyzer = os.path.join(repo_root, 'js_analyzer.py')
+
+    if not os.path.exists(analyzer):
+        # Try to find it in PATH
+        analyzer = 'js_analyzer.py'
+
+    secrets_found = False
+    for js_file in js_files:
+        result = subprocess.run(
+            [sys.executable, analyzer, '-f', js_file, '--format', 'json', '-o', '/tmp/precommit_check'],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            import json
+            try:
+                with open('/tmp/precommit_check_findings.json', 'r') as f:
+                    data = json.load(f)
+                if data.get('findings', {}).get('secrets', []):
+                    print(f"\n❌ BLOCKED: Secrets found in {js_file}:")
+                    for s in data['findings']['secrets']:
+                        print(f"   Line {s.get('line', '?')}: {s.get('value', '')}")
+                    secrets_found = True
+            except (json.JSONDecodeError, FileNotFoundError):
+                pass
+
+    if secrets_found:
+        print("\n⚠️  Commit blocked by JS Analyzer pre-commit hook.")
+        print("   Remove secrets before committing, or use: git commit --no-verify")
+        sys.exit(1)
+
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

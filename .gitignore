@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# JS Analyzer outputs
+*_findings.json
+*_report.html
+*.sarif
+*_postman.json
+*_summary.md
+*_reports.zip
+.js_analyzer_cache.json
+
+# Test files
+test_sample.js
+test_output*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

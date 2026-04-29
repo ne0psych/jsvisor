@@ -1,0 +1,68 @@
+name: JS Analyzer Security Scan
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  js-analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install JS Analyzer
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run JS Analyzer
+        run: |
+          python js_analyzer.py -d . \
+            --ast --entropy --frameworks \
+            --threads 4 \
+            --format json sarif \
+            -o js_analysis \
+            --redact
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: js_analysis.sarif
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const data = JSON.parse(fs.readFileSync('js_analysis_findings.json', 'utf8'));
+              const total = Object.values(data.findings).flat().length;
+              const secrets = (data.findings.secrets || []).length;
+              let body = `## 🔍 JS Analyzer Results\n\n`;
+              body += `**Total findings:** ${total}\n`;
+              if (secrets > 0) {
+                body += `⚠️ **${secrets} potential secret(s) detected!**\n`;
+              }
+              body += `\nSee the Security tab for full SARIF results.`;
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            } catch (e) {
+              console.log('No findings file found');
+            }
